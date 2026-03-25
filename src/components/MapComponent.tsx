@@ -608,13 +608,17 @@ function TrafficMap() {
     }),
   ], [staticLayers, filteredData?.tripLanes, time, viewState?.zoom, pathExtension]);
 
-  if (!metrics || !filteredData) {
+  const baseMap = useMemo(() => <MapLibre mapStyle={BASEMAP_URL} />, []);
+
+  if (!metrics || !filteredData || !cameras.length) {
     return (
-      <div className="w-full h-screen bg-[#06090f] flex items-center justify-center text-[#00ff96] font-mono text-xs opacity-50">
-        ESTABLISHING TELEMETRY UPLINK...
+      <div className="w-full h-screen bg-[#06090f] flex items-center justify-center text-[#00ff96] font-mono text-xs opacity-50 flex-col gap-4">
+        <div className="w-8 h-8 border-2 border-[#00ff96]/20 border-t-[#00ff96] rounded-full animate-spin" />
+        <span className="tracking-[0.3em] animate-pulse uppercase">Establishing Telemetry Uplink...</span>
       </div>
     );
   }
+
 
   return (
     <div className="w-full h-screen relative bg-[#06090f] overflow-hidden font-sans">
@@ -625,7 +629,7 @@ function TrafficMap() {
         layers={layers}
         getTooltip={getTooltipContent}
       >
-        <MapLibre mapStyle={BASEMAP_URL} />
+        {baseMap}
       </DeckGL>
       
       <MemoizedDashboard 
