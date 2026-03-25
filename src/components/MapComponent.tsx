@@ -14,6 +14,9 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // CONSTANTS & DICTIONARIES
 // ==========================================
 
+const HIGHLIGHT_COLOR: [number, number, number, number] = [255, 255, 255, 100];
+const CAMERA_FILL_COLOR: [number, number, number, number] = [6, 9, 15, 255];
+
 const BASEMAP_URL = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
 
 const INITIAL_VIEW_STATE = { 
@@ -286,7 +289,8 @@ function TrafficMap() {
   const [trafficData, setTrafficData] = useState<any[]>([]);
   const [time, setTime] = useState(0);
   const [activeFilter, setActiveFilter] = useState('ALL'); 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const pathExtension = useMemo(() => [new PathStyleExtension({ offset: true })], []);
   const [historyData, setHistoryData] = useState<Record<string, any[]>>({});
   const [viewState, setViewState] = useState<any>(INITIAL_VIEW_STATE);
   const GLOBAL_LOOP = 35000;
@@ -492,16 +496,16 @@ function TrafficMap() {
         widthMinPixels: 1, 
         getWidth: (d: any) => (d.traffic / 150) * (d.roadClass === 'motorway' ? 2 : 1),
         getOffset: 1.5, 
-        extensions: [new PathStyleExtension({ offset: true })],
+        extensions: pathExtension,
         pickable: true, 
         autoHighlight: true,
-        highlightColor: [255, 255, 255, 100],
+        highlightColor: HIGHLIGHT_COLOR,
       }),
       new ScatterplotLayer({
         id: 'camera-nodes',
         data: filteredData.points,
         getPosition: (d: any) => [d.lon, d.lat],
-        getFillColor: [6, 9, 15, 255], 
+        getFillColor: CAMERA_FILL_COLOR, 
         getLineColor: (d: any) => [...getTrafficColor(d.status), 180], 
         stroked: true,
         filled: true,
@@ -528,8 +532,11 @@ function TrafficMap() {
         const hwBonus = (d.roadClass === 'motorway' && (viewState?.zoom || 0) < 9) ? 2.5 : 1;
         return Math.max(2, (d.traffic / 100)) * hwBonus;
       },
+      updateTriggers: {
+        getWidth: [(viewState?.zoom || 0) < 9]
+      },
       getOffset: 1.5,
-      extensions: [new PathStyleExtension({ offset: true })],
+      extensions: pathExtension,
       opacity: ((viewState?.zoom || 0) < 9) ? 0.9 : 0.8,
       trailLength: 10000, 
       currentTime: time, 
