@@ -542,7 +542,47 @@ function TrafficMap() {
     ];
   }, [filteredData, pathExtension]);
 
-  const layers = [
+  const onViewStateChange = useCallback(({ viewState: newViewState }: any) => {
+    setViewState(newViewState);
+  }, []);
+
+  const getTooltipContent = useCallback(({ object }: any) => {
+    if (!object) return null;
+    if (object.baseScp) fetchHistory(object.baseScp);
+    const history = historyData[object.baseScp] || [];
+    const isD1 = object.direction === 1;
+    const isD2 = object.direction === 2;
+
+    return {
+      html: `
+        <div class="p-4 font-sans min-w-[240px] max-w-[90vw]">
+          <div class="font-black text-white text-lg border-b border-white/20 pb-2 mb-3 tracking-tighter italic uppercase truncate">${object.name}</div>
+          <div class="flex justify-between items-center mb-1.5 p-2 rounded-lg transition-all ${isD1 ? 'bg-white/10 border border-white/20' : (object.direction ? 'opacity-30' : '')}">
+            <span class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">${object.d1Label}</span>
+            <span class="text-lg font-black ${object.d1Count > 0 ? 'text-[#00ff96]' : 'text-gray-600'}">${object.d1Count}</span>
+          </div>
+          <div class="flex justify-between items-center mb-3 p-2 rounded-lg transition-all ${isD2 ? 'bg-white/10 border border-white/20' : (object.direction ? 'opacity-30' : '')}">
+            <span class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">${object.d2Label}</span>
+            <span class="text-lg font-black ${object.d2Count > 0 ? 'text-[#00ff96]' : 'text-gray-600'}">${object.d2Count}</span>
+          </div>
+          <div class="p-2 bg-black/40 rounded-lg border border-white/5 space-y-1">
+            <div class="flex justify-between items-center mb-1">
+              <span class="text-[8px] font-black uppercase tracking-widest text-[#00ff96]/60">24HR FLOW PULSE</span>
+              <span class="text-[8px] font-mono opacity-40">VOL: ${object.totalTraffic}</span>
+            </div>
+            ${history.length > 0 ? `
+              <div class="flex items-end gap-[1px] h-8 pt-1">
+                ${history.map((h: any) => `<div class="flex-1 bg-[#00ff96]/40 hover:bg-[#00ff96] transition-colors rounded-t-[1px]" style="height: ${Math.max(10, (h.count / 800) * 100)}%"></div>`).join('')}
+              </div>
+            ` : '<div class="h-8 flex items-center justify-center text-[8px] opacity-20 italic">Loading telemetry...</div>'}
+          </div>
+        </div>
+      `,
+      style: { backgroundColor: '#0b0f17', borderRadius: '16px', border: '1px solid #ffffff15', color: '#fff' }
+    };
+  }, [fetchHistory, historyData]);
+
+  const layers = useMemo(() => [
     ...staticLayers,
     new TripsLayer({
       id: 'traffic-telemetry-packets',
@@ -566,7 +606,7 @@ function TrafficMap() {
       currentTime: time, 
       pickable: false, 
     }),
-  ];
+  ], [staticLayers, filteredData?.tripLanes, time, viewState?.zoom, pathExtension]);
 
   if (!metrics || !filteredData) {
     return (
@@ -580,49 +620,10 @@ function TrafficMap() {
     <div className="w-full h-screen relative bg-[#06090f] overflow-hidden font-sans">
       <DeckGL 
         viewState={viewState} 
-        onViewStateChange={({ viewState: newViewState }) => setViewState(newViewState)} 
+        onViewStateChange={onViewStateChange} 
         controller={true} 
         layers={layers}
-        getTooltip={({object}: any) => {
-          if (!object) return null;
-          if (object.baseScp) fetchHistory(object.baseScp);
-          const isD1 = object.direction === 1;
-          const isD2 = object.direction === 2;
-          const history = historyData[object.baseScp] || [];
-          return {
-            html: `
-              <div class="p-4 font-sans min-w-[220px] max-w-[85vw] sm:max-w-none">
-                <div class="font-black text-white text-lg border-b border-white/20 pb-2 mb-3 tracking-tighter italic uppercase truncate">${object.name}</div>
-                <div class="flex justify-between items-center mb-1.5 p-2 rounded-lg transition-all ${isD1 ? 'bg-white/10 border border-white/20' : (object.direction ? 'opacity-30' : '')}">
-                  <span class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">${object.d1Label}</span>
-                  <span class="text-lg font-black ${object.d1Count > 0 ? 'text-[#00ff96]' : 'text-gray-600'}">${object.d1Count}</span>
-                </div>
-                <div class="flex justify-between items-center mb-3 p-2 rounded-lg transition-all ${isD2 ? 'bg-white/10 border border-white/20' : (object.direction ? 'opacity-30' : '')}">
-                  <span class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">${object.d2Label}</span>
-                  <span class="text-lg font-black ${object.d2Count > 0 ? 'text-[#00ff96]' : 'text-gray-600'}">${object.d2Count}</span>
-                </div>
-                <div class="flex justify-between items-center bg-blue-500/10 p-2 rounded-md border border-blue-500/20 mb-3">
-                  <span class="text-[9px] text-blue-300 uppercase font-black">Total Node Flow</span>
-                  <span class="font-black text-xl text-[#00e6ff]">${object.totalTraffic}</span>
-                </div>
-                <div id="sparkline-container">
-                   ${history.length > 0 ? `
-                     <div class="p-2 bg-black/40 rounded-lg border border-white/5">
-                        <div class="flex justify-between items-center mb-1">
-                          <span class="text-[8px] font-black uppercase tracking-widest text-[#00ff96]/60">24HR FLOW PULSE</span>
-                          <span class="text-[8px] font-mono opacity-40">MAX: ${Math.max(...history.map((h:any) => h.count_15min), 0)}</span>
-                        </div>
-                        <svg viewBox="0 0 100 30" class="w-full h-8 stroke-[#00ff96] fill-none stroke-[1.5]">
-                          <polyline points="${history.map((h:any, i:number) => `${(i / (history.length - 1)) * 100},${28 - (h.count_15min / Math.max(...history.map((h2:any) => h2.count_15min), 1)) * 26}`).join(' ')}" stroke-linejoin="round" />
-                        </svg>
-                     </div>
-                   ` : '<div class="h-8 flex items-center text-[8px] opacity-30 text-white italic">ESTABLISHING HISTORY UPLINK...</div>'}
-                </div>
-              </div>
-            `,
-            style: { backgroundColor: '#0b0f17', borderRadius: '16px', border: '1px solid #ffffff15', color: '#fff' }
-          };
-        }}
+        getTooltip={getTooltipContent}
       >
         <MapLibre mapStyle={BASEMAP_URL} />
       </DeckGL>
