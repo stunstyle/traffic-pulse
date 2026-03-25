@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 
 export async function GET() {
   try {
-    const response = await fetch('https://bgtoll.bg/index.php/traffic_passes/data', {
+    const PROXY_URL = process.env.TRAFFIC_PROXY_URL || 'https://bg-traffic-proxy.stunstyle.workers.dev/';
+    
+    const response = await fetch(PROXY_URL, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
