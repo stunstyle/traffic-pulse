@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -118,29 +119,42 @@ const getCenteredCurvedPath = (cameraLon: number, cameraLat: number, osmPath: nu
   return { path: newPath, snappedCenter };
 };
 
-const getTimestamps = (pathArray: number[][]) => {
+const getSpeedFactor = (count: number, capacity: number) => {
+  if (count === 0) return 1.0;
+  const ratio = count / Math.max(1, capacity);
+  if (ratio < 0.2) return 2.0; 
+  if (ratio < 0.4) return 1.5; 
+  if (ratio < 0.8) return 0.8; 
+  if (ratio < 1.2) return 0.4; 
+  return 0.15; 
+};
+
+const getTimestamps = (pathArray: number[][], speedFactor: number = 1.0) => {
   let dist = 0;
   const timestamps = [0];
   for (let i = 1; i < pathArray.length; i++) {
     const dx = pathArray[i][0] - pathArray[i-1][0];
     const dy = pathArray[i][1] - pathArray[i-1][1];
     dist += Math.sqrt(dx * dx + dy * dy);
-    timestamps.push(dist * 100000); 
+    timestamps.push((dist * 100000) / speedFactor); 
   }
   return timestamps;
 };
 
-const getRoadClass = (roadNum: string) => {
-  if (!roadNum) return 'other';
-  if (String(roadNum).toUpperCase().startsWith('A')) return 'motorway';
-  return 'other';
+const getRoadCapacity = (roadNum: string) => {
+  if (!roadNum) return 100;
+  const numStr = String(roadNum).trim().toUpperCase();
+  if (numStr.startsWith('A')) return 600;
+  const digitsOnly = numStr.replace(/\D/g, '');
+  if (digitsOnly.length === 1) return 350;
+  if (digitsOnly.length === 2) return 180;
+  return 100;
 };
 
 // UPDATED TO CIVIC-TECH TERMINOLOGY
-const getTrafficStatus = (count: number, roadClass: string) => {
-  const threshold = roadClass === 'motorway' ? { med: 250, high: 500 } : { med: 80, high: 180 };
-  if (count < threshold.med) return 'CLEAR';
-  if (count < threshold.high) return 'HEAVY';
+const getTrafficStatus = (count: number, capacity: number) => {
+  if (count < capacity * 0.4) return 'CLEAR';
+  if (count < capacity * 0.8) return 'HEAVY';
   return 'SEVERE';
 };
 
@@ -148,6 +162,29 @@ const getTrafficColor = (status: string): [number, number, number] => {
   if (status === 'CLEAR') return [0, 255, 150];   
   if (status === 'HEAVY') return [255, 220, 0];  
   return [255, 0, 85];                              
+};
+
+const Sparkline = ({ data }: { data: any[] }) => {
+  if (!data || data.length < 2) return <div className="h-8 flex items-center text-[8px] opacity-30 text-white italic">ESTABLISHING HISTORY UPLINK...</div>;
+  
+  const max = Math.max(...data.map(d => d.count_15min), 1);
+  const points = data.map((d, i) => {
+    const x = (i / (data.length - 1)) * 100;
+    const y = 28 - (d.count_15min / max) * 26;
+    return `${x},${y}`;
+  }).join(' ');
+
+  return (
+    <div className="mt-3 p-2 bg-black/40 rounded-lg border border-white/5">
+      <div className="flex justify-between items-center mb-1">
+        <span className="text-[8px] font-black uppercase tracking-widest text-[#00ff96]/60">24HR FLOW PULSE</span>
+        <span className="text-[8px] font-mono opacity-40">MAX: {max}</span>
+      </div>
+      <svg viewBox="0 0 100 30" className="w-full h-8 stroke-[#00ff96] fill-none stroke-[1.5]">
+        <polyline points={points} strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
 };
 
 // ==========================================
@@ -159,9 +196,11 @@ function TrafficMap() {
   const [trafficData, setTrafficData] = useState<any[]>([]);
   const [time, setTime] = useState(0);
   const [activeFilter, setActiveFilter] = useState('ALL'); 
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [historyData, setHistoryData] = useState<Record<string, any[]>>({});
   const GLOBAL_LOOP = 35000;
 
-const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STATE);
+  const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STATE);
   // Set Page Title
   useEffect(() => {
     document.title = "Traffic Pulse | Bulgaria Road Network";
@@ -177,7 +216,19 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
       transitionDuration: 2500, 
       transitionInterpolator: new FlyToInterpolator({ speed: 1.2 })
     }));
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setIsSidebarOpen(false);
+    }
   }, []);
+
+  const fetchHistory = useCallback(async (baseScp: string) => {
+    if (historyData[baseScp]) return;
+    try {
+      const res = await fetch(`/api/traffic/history?camera_id=${baseScp}`);
+      const data = await res.json();
+      setHistoryData(prev => ({ ...prev, [baseScp]: data }));
+    } catch (err) { console.error("History Error:", err); }
+  }, [historyData]);
 
   const resetView = useCallback(() => {
     setViewState(prev => ({
@@ -188,7 +239,40 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
   }, []);
 
   useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT') return;
+      
+      const step = 0.5;
+      const zoomStep = 0.5;
+      
+      setViewState(prev => {
+        let { longitude, latitude, zoom } = prev;
+        
+        if (e.key === 'ArrowUp') latitude += step / zoom;
+        else if (e.key === 'ArrowDown') latitude -= step / zoom;
+        else if (e.key === 'ArrowLeft') longitude -= step / zoom;
+        else if (e.key === 'ArrowRight') longitude += step / zoom;
+        else if (e.key === '=' || e.key === '+') zoom += zoomStep;
+        else if (e.key === '-') zoom -= zoomStep;
+        else if (e.key === '1') { setActiveFilter('ALL'); return prev; }
+        else if (e.key === '2') { setActiveFilter('CLEAR'); return prev; }
+        else if (e.key === '3') { setActiveFilter('HEAVY'); return prev; }
+        else if (e.key === '4') { setActiveFilter('SEVERE'); return prev; }
+        else return prev;
+
+        return { ...prev, longitude, latitude, zoom, transitionDuration: 100 };
+      });
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  useEffect(() => {
     fetch('/cameras_with_paths.json').then(res => res.json()).then(setCameras);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(console.error);
+    }
   }, []);
 
   useEffect(() => {
@@ -224,6 +308,7 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
     // UPDATED STATUS DICTIONARY
     const statusCounts = { CLEAR: 0, HEAVY: 0, SEVERE: 0 };
     const nodeStats: any[] = [];
+    const regionFlow: Record<string, number> = {};
 
     trafficData.forEach(row => {
       trafficMap.set(String(row.scp).trim(), row);
@@ -251,8 +336,9 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
       totalThroughput += nodeTotalFlow;
       total1HrThroughput += node1HrFlow;
 
-      const roadClass = getRoadClass(actualRoad);
-      const nodeStatus = getTrafficStatus(Math.max(d1C, d2C), roadClass);
+      const capacity = getRoadCapacity(actualRoad);
+      const roadClass = String(actualRoad).toUpperCase().startsWith('A') ? 'motorway' : 'other';
+      const nodeStatus = getTrafficStatus(Math.max(d1C, d2C), capacity);
       
       if (nodeTotalFlow > 0) {
         statusCounts[nodeStatus]++;
@@ -267,15 +353,21 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
           surge, 
           trendPct,
           lon: cam.lon,
-          lat: cam.lat 
+          lat: cam.lat,
+          baseScp: cam.baseScp
         });
+
+        const region = cam.region || cam.baseScp.substring(0, 3); 
+        regionFlow[region] = (regionFlow[region] || 0) + nodeTotalFlow;
       }
 
       const { path, snappedCenter } = getCenteredCurvedPath(cam.lon, cam.lat, cam.path);
       const start = path[0];
       const end = path[path.length - 1];
       const displacement = Math.sqrt(Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2));
-      const timestampsD1 = getTimestamps(path);
+      
+      const speedD1 = getSpeedFactor(d1C, capacity);
+      const timestampsD1 = getTimestamps(path, speedD1);
       const maxTimeD1 = timestampsD1[timestampsD1.length - 1];
       
       const windingFactor = Math.max(1, (maxTimeD1 / 100000) / displacement);
@@ -288,7 +380,7 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
       };
 
       if (d1C > 0) {
-        const statusD1 = getTrafficStatus(d1C, roadClass);
+        const statusD1 = getTrafficStatus(d1C, capacity);
         wireLanes.push({ path, traffic: d1C, roadClass, status: statusD1, direction: 1, ...shared });
         const interval = maxTimeD1 + 2000; 
         const numPackets = Math.max(1, Math.ceil(GLOBAL_LOOP / interval));
@@ -298,9 +390,10 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
       }
 
       if (d2C > 0) {
-        const statusD2 = getTrafficStatus(d2C, roadClass);
+        const statusD2 = getTrafficStatus(d2C, capacity);
         const revPath = [...path].reverse();
-        const timestampsD2 = getTimestamps(revPath);
+        const speedD2 = getSpeedFactor(d2C, capacity);
+        const timestampsD2 = getTimestamps(revPath, speedD2);
         const maxTimeD2 = timestampsD2[timestampsD2.length - 1];
         wireLanes.push({ path: revPath, traffic: d2C, roadClass, status: statusD2, direction: 2, ...shared });
         const interval = maxTimeD2 + 2000; 
@@ -321,7 +414,12 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
       .sort((a, b) => b.surge - a.surge)
       .slice(0, 3);
 
-    return { wireLanes, tripLanes, points, update: trafficData[0]?.time, totalThroughput, globalTrendPct, statusCounts, hitList };
+    const topRegions = Object.entries(regionFlow)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([name, flow]) => ({ name, flow }));
+
+    return { wireLanes, tripLanes, points, update: trafficData[0]?.time, totalThroughput, globalTrendPct, statusCounts, hitList, topRegions };
   }, [cameras, trafficData]);
 
   const filteredData = useMemo(() => {
@@ -338,7 +436,16 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
     if (!metrics) return null;
     
     return (
-      <div className="absolute top-8 left-8 z-10 bg-[#0a0f18]/80 backdrop-blur-2xl p-6 rounded-3xl border border-white/10 text-white shadow-2xl max-w-sm flex flex-col gap-6 select-none">
+      <>
+        {/* Mobile Toggle Button */}
+        <button 
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          className="md:hidden absolute top-4 right-4 z-50 bg-[#0a0f18]/80 p-3 rounded-full border border-white/20 backdrop-blur-md text-white shadow-xl transition-all cursor-pointer flex items-center justify-center w-12 h-12"
+        >
+          {isSidebarOpen ? '✕' : '☰'}
+        </button>
+
+        <div className={`absolute top-0 left-0 h-dvh w-[85%] sm:w-[350px] md:h-auto md:max-h-[90vh] md:w-auto md:top-8 md:left-8 z-40 bg-[#0a0f18]/95 md:bg-[#0a0f18]/80 backdrop-blur-2xl p-6 md:rounded-3xl border-r md:border border-white/10 text-white shadow-2xl flex flex-col gap-6 select-none transition-transform duration-300 overflow-y-auto ${isSidebarOpen ? 'translate-x-0' : '-translate-x-[110%] md:translate-x-0'}`}>
         
         {/* Header Block with added Subtitle */}
         <div>
@@ -375,6 +482,21 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
             <span className="text-[10px] font-bold opacity-40 uppercase tracking-tighter">Veh / 15m</span>
           </div>
           {metrics.update && <span className="text-[9px] font-mono text-white/40 block mt-2">SYNC: {new Date(metrics.update).toLocaleTimeString('bg-BG')} EET</span>}
+        </div>
+
+        {/* TOP REGIONS - NEW SECTION */}
+        <div>
+          <span className="text-[9px] font-black tracking-widest uppercase opacity-40 mb-2 block">Regional Volume Leaderboard</span>
+          <div className="space-y-2 bg-black/40 p-3 rounded-xl border border-white/5">
+            {metrics.topRegions.map((reg, i) => (
+              <div key={reg.name} className="flex justify-between items-center text-[11px] font-bold">
+                <div className="flex items-center gap-2 text-white/80">
+                  <span className="opacity-30">{i + 1}.</span> {reg.name}
+                </div>
+                <span className="font-mono text-[#00ff96]">{reg.flow.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* UPDATED: Health Filters -> Filter by Condition */}
@@ -419,7 +541,7 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
             Active Bottlenecks
           </span>
           <div className="space-y-1.5">
-            {metrics.hitList.length > 0 ? metrics.hitList.map((node, i) => (
+            {metrics.hitList.length > 0 ? metrics.hitList.map((node: any, i: number) => (
               <div 
                 key={i} 
                 onClick={() => goToCamera(node.lon, node.lat)}
@@ -443,8 +565,17 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
         </div>
 
       </div>
+      
+      {/* Mobile backdrop */}
+      {isSidebarOpen && (
+        <div 
+          className="md:hidden absolute inset-0 bg-black/60 z-30 backdrop-blur-sm transition-opacity"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+      </>
     );
-  }, [metrics, activeFilter, goToCamera, resetView]);
+  }, [metrics, activeFilter, goToCamera, resetView, isSidebarOpen]);
 
   if (!metrics || !filteredData) {
     return (
@@ -516,12 +647,19 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
         layers={layers}
         getTooltip={({object}: any) => {
           if (!object) return null;
+          
+          if (object.baseScp) {
+            fetchHistory(object.baseScp);
+          }
+
           const isD1 = object.direction === 1;
           const isD2 = object.direction === 2;
+          const history = historyData[object.baseScp] || [];
+
           return {
             html: `
-              <div class="p-4 font-sans min-w-[220px]">
-                <div class="font-black text-white text-lg border-b border-white/20 pb-2 mb-3 tracking-tighter italic uppercase">${object.name}</div>
+              <div class="p-4 font-sans min-w-[220px] max-w-[85vw] sm:max-w-none">
+                <div class="font-black text-white text-lg border-b border-white/20 pb-2 mb-3 tracking-tighter italic uppercase truncate">${object.name}</div>
                 <div class="flex justify-between items-center mb-1.5 p-2 rounded-lg transition-all ${isD1 ? 'bg-white/10 border border-white/20' : (object.direction ? 'opacity-30' : '')}">
                   <span class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">${object.d1Label}</span>
                   <span class="text-lg font-black ${object.d1Count > 0 ? 'text-[#00ff96]' : 'text-gray-600'}">${object.d1Count}</span>
@@ -530,9 +668,22 @@ const [viewState, setViewState] = useState<Record<string, any>>(INITIAL_VIEW_STA
                   <span class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">${object.d2Label}</span>
                   <span class="text-lg font-black ${object.d2Count > 0 ? 'text-[#00ff96]' : 'text-gray-600'}">${object.d2Count}</span>
                 </div>
-                <div class="flex justify-between items-center bg-blue-500/10 p-2 rounded-md border border-blue-500/20">
+                <div class="flex justify-between items-center bg-blue-500/10 p-2 rounded-md border border-blue-500/20 mb-3">
                   <span class="text-[9px] text-blue-300 uppercase font-black">Total Node Flow</span>
                   <span class="font-black text-xl text-[#00e6ff]">${object.totalTraffic}</span>
+                </div>
+                <div id="sparkline-container">
+                   ${history.length > 0 ? `
+                     <div class="p-2 bg-black/40 rounded-lg border border-white/5">
+                        <div class="flex justify-between items-center mb-1">
+                          <span class="text-[8px] font-black uppercase tracking-widest text-[#00ff96]/60">24HR FLOW PULSE</span>
+                          <span class="text-[8px] font-mono opacity-40">MAX: ${Math.max(...history.map((h:any) => h.count_15min), 0)}</span>
+                        </div>
+                        <svg viewBox="0 0 100 30" class="w-full h-8 stroke-[#00ff96] fill-none stroke-[1.5]">
+                          <polyline points="${history.map((h:any, i:number) => `${(i / (history.length - 1)) * 100},${28 - (h.count_15min / Math.max(...history.map((h2:any) => h2.count_15min), 1)) * 26}`).join(' ')}" stroke-linejoin="round" />
+                        </svg>
+                     </div>
+                   ` : '<div class="h-8 flex items-center text-[8px] opacity-30 text-white italic">ESTABLISHING HISTORY UPLINK...</div>'}
                 </div>
               </div>
             `,
