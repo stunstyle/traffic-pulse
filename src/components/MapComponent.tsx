@@ -106,7 +106,7 @@ const getCenteredCurvedPath = (cameraLon: number, cameraLat: number, osmPath: nu
   });
   
   const snappedCenter = osmPath[closestIdx];
-  let newPath = [snappedCenter];
+  const newPath = [snappedCenter];
   
   let distBack = 0;
   for (let i = closestIdx; i > 0 && distBack < TARGET_DISTANCE; i--) {
@@ -166,7 +166,7 @@ const getTrafficColor = (status: string): [number, number, number] => {
 };
 
 // --- SUB-COMPONENTS ---
-const MemoizedDashboard = React.memo(({ metrics, activeFilter, setActiveFilter, goToCamera, resetView, isSidebarOpen, setIsSidebarOpen }: any) => {
+const MemoizedDashboard = React.memo(({ metrics, activeFilter, setActiveFilter, searchTerm, setSearchTerm, goToCamera, resetView, isSidebarOpen, setIsSidebarOpen }: any) => {
   if (!metrics) return null;
   
   return (
@@ -192,6 +192,20 @@ const MemoizedDashboard = React.memo(({ metrics, activeFilter, setActiveFilter, 
             <span className="text-[9px] font-mono text-white/40 tracking-wider">LIVE DATA FEED ACTIVE</span>
           </div>
           {metrics.update && <span className="text-[9px] font-mono text-white/40 block mt-2">SYNC: {new Date(metrics.update).toLocaleTimeString('bg-BG')} EET</span>}
+        </div>
+
+        {/* Search Bar */}
+        <div className="relative group/search">
+          <input 
+            type="text"
+            placeholder="Search road or station..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xs focus:outline-none focus:border-[#00ff96]/50 focus:bg-white/10 transition-all placeholder:text-white/20 font-medium"
+          />
+          <div className="absolute right-3 top-3 opacity-20 group-focus-within/search:opacity-50 transition-opacity">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          </div>
         </div>
 
         <div>
@@ -279,6 +293,7 @@ const MemoizedDashboard = React.memo(({ metrics, activeFilter, setActiveFilter, 
     </>
   );
 });
+MemoizedDashboard.displayName = 'MemoizedDashboard';
 
 // ==========================================
 // MAIN COMPONENT
@@ -290,6 +305,7 @@ function TrafficMap() {
   const [time, setTime] = useState(0);
   const [activeFilter, setActiveFilter] = useState('ALL'); 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
   const pathExtension = useMemo(() => [new PathStyleExtension({ offset: true })], []);
   const [historyData, setHistoryData] = useState<Record<string, any[]>>({});
   const [viewState, setViewState] = useState<any>(INITIAL_VIEW_STATE);
@@ -324,7 +340,7 @@ function TrafficMap() {
   }, [historyData]);
 
   const resetView = useCallback(() => {
-    setViewState((prev: any) => ({
+    setViewState(() => ({
       ...INITIAL_VIEW_STATE,
       transitionDuration: 2500, 
       transitionInterpolator: new FlyToInterpolator({ speed: 1.2 })
@@ -476,13 +492,21 @@ function TrafficMap() {
 
   const filteredData = useMemo(() => {
     if (!metrics) return null;
-    const filterFn = (d: any) => activeFilter === 'ALL' || d.status === activeFilter;
+    const searchLower = searchTerm.toLowerCase();
+    const filterFn = (d: any) => {
+      const matchesSearch = !searchTerm || 
+        d.name?.toLowerCase().includes(searchLower) || 
+        String(d.roadNum || '').toLowerCase().includes(searchLower) ||
+        String(d.roadClass || '').toLowerCase().includes(searchLower);
+      const matchesStatus = activeFilter === 'ALL' || d.status === activeFilter;
+      return matchesSearch && matchesStatus;
+    };
     return {
       wireLanes: metrics.wireLanes.filter(filterFn),
       tripLanes: metrics.tripLanes.filter(filterFn),
       points: metrics.points.filter(filterFn)
     };
-  }, [metrics, activeFilter]);
+  }, [metrics, activeFilter, searchTerm]);
 
   const staticLayers = useMemo(() => {
     if (!filteredData) return [];
@@ -516,7 +540,7 @@ function TrafficMap() {
         pickable: true,
       })
     ];
-  }, [filteredData]);
+  }, [filteredData, pathExtension]);
 
   const layers = [
     ...staticLayers,
@@ -607,13 +631,90 @@ function TrafficMap() {
         metrics={metrics}
         activeFilter={activeFilter}
         setActiveFilter={setActiveFilter}
+        searchTerm={searchTerm}
+        setSearchTerm={setSearchTerm}
         goToCamera={goToCamera}
         resetView={resetView}
         isSidebarOpen={isSidebarOpen}
         setIsSidebarOpen={setIsSidebarOpen}
       />
+
+      {/* Performance & Alert HUD */}
+      <div className="absolute top-4 right-4 pointer-events-none flex flex-col items-end gap-2 z-50">
+        <PerformanceHUD />
+        {metrics && <GridlockAlerts points={metrics.points} goToCamera={goToCamera} />}
+      </div>
     </div>
   );
 }
+
+const PerformanceHUD = () => {
+  const [fps, setFps] = useState(0);
+  
+  useEffect(() => {
+    let frameId: number;
+    let lastTime = performance.now();
+    let frames = 0;
+
+    const tick = () => {
+      frames++;
+      const now = performance.now();
+      if (now >= lastTime + 1000) {
+        setFps(Math.round((frames * 1000) / (now - lastTime)));
+        lastTime = now;
+        frames = 0;
+      }
+      frameId = requestAnimationFrame(tick);
+    };
+
+    tick();
+    return () => cancelAnimationFrame(frameId);
+  }, []);
+
+  return (
+    <div className="bg-black/40 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 shadow-2xl transition-all hover:bg-black/60">
+      <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${fps >= 55 ? 'bg-[#00ff96] shadow-[0_0_8px_#00ff96]' : fps >= 30 ? 'bg-yellow-400' : 'bg-red-500'}`} />
+      <span className="text-[10px] font-mono text-white/50 tracking-tighter uppercase font-bold">Engine</span>
+      <span className={`text-xs font-black font-mono transition-colors ${fps >= 55 ? 'text-[#00ff96]' : 'text-white'}`}>
+        {fps} <span className="text-[8px] opacity-40">FPS</span>
+      </span>
+    </div>
+  );
+};
+
+const GridlockAlerts = ({ points, goToCamera }: { points: any[], goToCamera: any }) => {
+  const alerts = useMemo(() => {
+    return points
+      .filter(p => p.status === 'SEVERE')
+      .sort((a, b) => b.totalTraffic - a.totalTraffic)
+      .slice(0, 3);
+  }, [points]);
+
+  if (alerts.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2 w-48 transition-all animate-in fade-in slide-in-from-right-4 duration-500">
+      <div className="flex items-center gap-2 px-2">
+        <span className="text-[8px] font-black tracking-[0.2em] text-red-500 uppercase opacity-80">Severe Gridlock</span>
+        <div className="flex-1 h-[1px] bg-red-500/20" />
+      </div>
+      {alerts.map((alert, i) => (
+        <button
+          key={i}
+          onClick={() => goToCamera(alert.lon, alert.lat)}
+          className="pointer-events-auto bg-red-950/40 backdrop-blur-md border border-red-500/20 p-2 rounded-xl text-left group hover:bg-red-900/40 transition-all flex flex-col gap-1 shadow-lg"
+        >
+          <div className="flex justify-between items-start">
+            <span className="text-[9px] font-bold text-white/90 truncate max-w-[100px]">{alert.name}</span>
+            <span className="text-[9px] font-black text-red-400">{alert.totalTraffic}</span>
+          </div>
+          <div className="w-full bg-red-500/10 h-1 rounded-full overflow-hidden">
+            <div className="bg-red-500 h-full animate-pulse" style={{ width: '100%' }} />
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+};
 
 export default TrafficMap;
